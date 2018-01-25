@@ -1,6 +1,5 @@
 import argparse
-import random
-from PIL import Image, ImageOps
+from PIL import Image
 import glob
 import cv2
 import numpy as np
@@ -10,7 +9,6 @@ import chainer.links as L
 from chainer import training
 from chainer import datasets
 from chainer import iterators
-from chainer import initializers
 from chainer import serializers
 from chainer.training import updaters 
 from chainer.training import extensions
@@ -21,12 +19,12 @@ from chainer.datasets import LabeledImageDataset
 class ColumnNet(chainer.Chain):
     def __init__(self, train=True):
         super(ColumnNet, self).__init__(
-            conv1=L.Convolution2D(3, 32, 4, initialW=initializers.Uniform(0.05)),
-            conv2=L.Convolution2D(32, 32, 4, initialW=initializers.Uniform(0.05)),
-            conv3=L.Convolution2D(32, 32, 4, initialW=initializers.Uniform(0.05)),
-            conv4=L.Convolution2D(32, 32, 3, initialW=initializers.Uniform(0.05)),
-            l1=L.Linear(512, 200, initialW=initializers.Uniform(0.05)),
-            l2=L.Linear(200, 3, initialW=initializers.Uniform(0.05)),
+            conv1=L.Convolution2D(3, 32, 4),
+            conv2=L.Convolution2D(32, 32, 4),
+            conv3=L.Convolution2D(32, 32, 4),
+            conv4=L.Convolution2D(32, 32, 3),
+            l1=L.Linear(512, 200),
+            l2=L.Linear(200, 3),
         )
         self.train = train
 
@@ -37,172 +35,64 @@ class ColumnNet(chainer.Chain):
         h = F.max_pooling_2d(F.relu(self.conv4(h)), 2)
         return self.l2(self.l1(h))
 
-def random_flip(image, label):
-    if random.randint(0, 1) == 0:
-        pass
-    else:
-        image = image.astype(np.uint8)
-        image = Image.fromarray(image.transpose(1,2,0))
-        image = ImageOps.mirror(image)
-        image = np.asarray(image).transpose(2,0,1)
-        image = image.astype(np.float32)
 
-        if label == 0:
-            label = np.array(2)
-        elif label == 2:
-            label = np.array(0)
+class TransformDataset(object):
+    def __init__(self, dataset, transform):
 
-    return image, label
+        self._dataset = dataset
+        self._transform = transform
 
-
-def random_rotate(image):
-    angle = random.uniform(-15, 15)
-    image = image.astype(np.uint8)
-    image = Image.fromarray(image.transpose(1,2,0))
-    image = image.rotate(angle)
-    image = np.asarray(image).transpose(2,0,1)
-    image = image.astype(np.float32)
-
-    return image
-
-
-def random_scale(image):
-    im_height = 101
-    im_width = 101
-    scaled_width = random.randint(91, 111)
-
-    if scaled_width < 101:
-        image = image.astype(np.uint8)
-        image = Image.fromarray(image.transpose(1,2,0))
-        image = image.resize((scaled_width, scaled_width), Image.BILINEAR) 
-        bg    = Image.new("RGB", (im_width, im_height), (0, 0, 0))
-        center = (im_width - scaled_width) // 2, (im_height - scaled_width) // 2
-        bg.paste(image, center)
-        image = np.asarray(bg).transpose(2,0,1)
-        image = image.astype(np.float32)
-    elif scaled_width > 101:
-        image = image.astype(np.uint8)
-        image = Image.fromarray(image.transpose(1,2,0))
-        image = image.resize((scaled_width, scaled_width), Image.BILINEAR) 
-        top = (scaled_width - im_width) // 2
-        left = (scaled_width - im_height) // 2
-        bottom = top + im_height
-        right = left + im_width
-        image = image.crop((top, left, bottom, right))
-        image = np.asarray(image).transpose(2,0,1)
-        image = image.astype(np.float32)
-    
-    return image
-
-
-def random_translate(image):
-    im_height = 101
-    im_width = 101
-
-    translate_width = random.randint(-10, 10)
-    translate_height = random.randint(-10, 10)
-
-    if translate_height < 0:
-        top = -1 * translate_height
-        bottom = im_height + translate_height
-    else:
-        top = 0
-        bottom = im_height - translate_height
-
-    if translate_width < 0:
-        left = -1 * translate_width
-        right = im_height + translate_width
-    else:
-        left = 0
-        right = im_height - translate_height
-        
-    image = image[:, top:bottom, left:right]
-    image = image.astype(np.uint8)
-    image = Image.fromarray(image.transpose(1,2,0))
-    bg    = Image.new("RGB", (im_width, im_height), (0, 0, 0))
-    bg.paste(image, (top,left))
-    image = np.asarray(bg).transpose(2,0,1)
-    image = image.astype(np.float32)
-
-    return image
-
-
-class PreprocessedDataset(chainer.dataset.DatasetMixin):
-
-    def __init__(self, path, root, mean, crop_size, random=True):
-        self.base = chainer.datasets.LabeledImageDataset(path, root)
-        self.mean = mean.astype('f')
-        self.crop_size = crop_size
-        self.random = random
+    def __getitem__(self, index):
+        in_data = self._dataset[index]
+        if isinstance(index, slice):
+            return [self._transform(in_data_elem) for in_data_elem in in_data]
+        else:
+            return self._transform(in_data)
 
     def __len__(self):
-        return len(self.base)
-
-    def get_example(self, i):
-        crop_size = self.crop_size
-
-        image, label = self.base[i]
-        _, h, w = image.shape
-
-        # shared process 
-        image = image.astype(np.uint8)
-        image = Image.fromarray(image.transpose(1,2,0))
-        image = image.resize((self.crop_size, self.crop_size), Image.BILINEAR)
-        image = np.asarray(image).transpose(2,0,1)
-        image = image.astype(np.float32)
-        image -= self.mean[:, None, None]
-
-        # random flip
-        image, label = random_flip(image, label)
-
-        # random affine distortion
-        # random rotate
-        image = random_rotate(image)
-        # random translate
-        image = random_translate(image)
-        # random scale
-        image = random_scale(image)
-
-        image *= (1.0 / 255.0)  # Scale to [0, 1]
-
-        return image, label
+        return len(self._dataset)
 
 
-class PreprocessedTestDataset(chainer.dataset.DatasetMixin):
+def resize(img):
+    img = Image.fromarray(img.transpose(1,2,0))
+    img = img.resize((101, 101), Image.BILINEAR)
+    return np.asarray(img).transpose(2,0,1)
 
-    def __init__(self, path, root, mean, crop_size, random=True):
-        self.base = chainer.datasets.LabeledImageDataset(path, root)
-        self.mean = mean.astype('f')
-        self.crop_size = crop_size
-        self.random = random
 
-    def __len__(self):
-        return len(self.base)
+def transform(inputs):
+    img, label = inputs
+    img = resize(img.astype(np.uint8))
+    img = img.astype(np.float32)
+    return img, label
 
-    def get_example(self, i):
-        crop_size = self.crop_size
 
-        image, label = self.base[i]
-        _, h, w = image.shape
+def load_dataset(lines):
+    pathsAndLabels = []
+    for line in lines:
+        words = line.replace("\n", "").split(",")
+        pathsAndLabels.append(np.asarray(["/data/" + words[0] + "/", words[1]]))
 
-        # shared process 
-        image = image.astype(np.uint8)
-        image = Image.fromarray(image.transpose(1,2,0))
-        image = image.resize((self.crop_size, self.crop_size), Image.BILINEAR)
-        image = np.asarray(image).transpose(2,0,1)
-        image = image.astype(np.float32)
-        image -= self.mean[:, None, None]
-        image *= (1.0 / 255.0)  # Scale to [0, 1]
+    # Make data for chainer
+    fnames = []
+    labels = []
+    for pathAndLabel in pathsAndLabels:
+        path = pathAndLabel[0]
+        label = pathAndLabel[1]
+        imagelist = glob.glob(path + "*")
+        for imgName in imagelist:
+            try:
+                file_check = Image.open(imgName)
+                file_check = np.array(file_check, dtype=np.uint8)
+                fnames.append(imgName)
+                labels.append(label)
+            except Exception:
+                pass
 
-        return image, label
-
+    dataset = LabeledImageDataset(list(zip(fnames, labels)))
+    return TransformDataset(dataset, transform)
 
 def main():
     parser = argparse.ArgumentParser(description='ColumnNet')
-    parser.add_argument('train', help='Path to training image-label list file')
-    parser.add_argument('val', help='Path to validation image-label list file')
-    parser.add_argument('--root', '-R', default='.',
-                        help='Root directory path of image files')
     parser.add_argument('--batchsize', '-B', type=int, default=32,
                         help='Number of images in each mini-batch')
     parser.add_argument('--epoch', '-e', type=int, default=200,
@@ -218,8 +108,6 @@ def main():
                         help='Number of units')
     parser.add_argument('--loaderjob', '-j', type=int,
                         help='Number of parallel data loading processes')
-    parser.add_argument('--mean', '-m', default='mean.npy',
-                        help='Mean file (computed by compute_mean.py)')
     parser.add_argument('--val_batchsize', '-b', type=int, default=250,
                         help='Validation minibatch size')
     parser.add_argument('--test', action='store_true') 
@@ -241,13 +129,25 @@ def main():
         model.to_gpu()
 
     # Setup an optimizer
-    optimizer = chainer.optimizers.SGD(lr=0.005)
+    optimizer = chainer.optimizers.Adam()
     optimizer.setup(model)
-    #optimizer.add_hook(chainer.optimizer.WeightDecay(0.05))
+    
+    # Load the ColumnNet dataset
+    f = open('train_list.txt')
+    train_lines = f.readlines()
+    f.close()
 
-    mean = np.load(args.mean)
-    train = PreprocessedDataset(args.train, args.root, mean, 101)
-    val   = PreprocessedTestDataset(args.val, args.root, mean, 101)
+    f = open('val_list.txt')
+    val_lines = f.readlines()
+    f.close()
+
+    #dataset = LabeledImageDataset(list(zip(fnames, labels)))
+    #transform_dataset = TransformDataset(dataset, transform)
+
+    #train, val = datasets.split_dataset_random(transform_dataset, int(len(dataset) * 0.8), seed=0)
+
+    train = load_dataset(train_lines)
+    val = load_dataset(val_lines)
 
     train_iter = iterators.MultiprocessIterator(train, args.batchsize)
     val_iter = chainer.iterators.MultiprocessIterator(
@@ -258,8 +158,8 @@ def main():
         val_interval = 5, 'epoch'
         log_interval = 1, 'epoch'
     else:
-        val_interval = 5, 'epoch'
-        log_interval = 1, 'epoch'
+        val_interval = 100000, 'iteration'
+        log_interval = 1000, 'iteration'
 
 
     # Set up an optimizer
@@ -268,7 +168,6 @@ def main():
  
     # Set up a trainer
     trainer.extend(extensions.Evaluator(val_iter, model, device=args.gpu),trigger=val_interval)
-    trainer.extend(extensions.ExponentialShift('lr', 0.95), trigger=(1, 'epoch'))
     trainer.extend(extensions.snapshot(), trigger=(1, 'epoch'))
     trainer.extend(extensions.snapshot_object(
         model, 'model_iter_{.updater.iteration}'), trigger=val_interval)
@@ -286,7 +185,7 @@ def main():
     trainer.extend(extensions.dump_graph('main/loss'))
     # Run the training
     trainer.run()
-    chainer.serializers.save_npz(args.out + '/columnnet.model', Model)
+    chainer.serializers.save_npz('result/columnnet.model', Model)
 
 
 if __name__ == "__main__":
